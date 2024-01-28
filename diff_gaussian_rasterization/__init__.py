@@ -27,6 +27,7 @@ def rasterize_gaussians(
     scales,
     rotations,
     cov3Ds_precomp,
+    viewmat,
     raster_settings,
 ):
     return _RasterizeGaussians.apply(
@@ -38,6 +39,7 @@ def rasterize_gaussians(
         scales,
         rotations,
         cov3Ds_precomp,
+        viewmat,
         raster_settings,
     )
 
@@ -53,6 +55,7 @@ class _RasterizeGaussians(torch.autograd.Function):
         scales,
         rotations,
         cov3Ds_precomp,
+        viewmat,
         raster_settings,
     ):
 
@@ -135,13 +138,48 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+                grad_means2D, grad_ts, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+             grad_means2D, grad_ts, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+        
+        with torch.no_grad():
+            # return projmat gradients
+            projmat = raster_settings.projmatrix.T
+            means_h = torch.cat([means3D, torch.ones_like(means3D[..., :1])], dim=-1)
+            p_hom = torch.einsum("ij,nj->ni", projmat, means_h)
+            rw = 1 / (p_hom[..., 3] + 1e-5)
+
+            proj = raster_settings.perspectivematrix.flatten()
+            # mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
+            # mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
+            v_tx = grad_means2D[:, 0] * (proj[0] * rw - proj[3] * p_hom[:, 0] * torch.square(rw))
+            v_tx += grad_means2D[:, 1] * (proj[1] * rw - proj[3] * p_hom[:, 1] * torch.square(rw))
+            v_ty = grad_means2D[:, 0] * (proj[4] * rw - proj[7] * p_hom[:, 0] * torch.square(rw))
+            v_ty += grad_means2D[:, 1] * (proj[5] * rw - proj[7] * p_hom[:, 1] * torch.square(rw))
+            v_tz = grad_means2D[:, 0] * (proj[8] * rw - proj[11] * p_hom[:, 0] * torch.square(rw))
+            v_tz += grad_means2D[:, 1] * (proj[9] * rw - proj[11] * p_hom[:, 1] * torch.square(rw))
+            v_t = torch.stack(
+                [
+                    v_tx,
+                    v_ty,
+                    v_tz,
+                    torch.zeros_like(v_tx),
+                ],
+                dim=-1,
+            )
+            v_t[:, :3] += grad_ts
+            # proj = projmat * means3d
+            # v_projmat = sum(outer(v_proj, means3d))
+            # v_projmat = torch.einsum("ni,nj->ij", v_proj, means_h)  # (4, 4)
+            # grad_viewmat = v_t @ means_h.T
+            grad_viewmat = torch.einsum("ni,nj->ij", v_t, means_h).T
+        # print(grad_viewmat)
+        # print("grad_viewmat:", (grad_viewmat ** 2).mean())
+        # print("grad_means2D:", (grad_means2D ** 2).mean())
 
         grads = (
             grad_means3D,
@@ -152,6 +190,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
+            grad_viewmat,
             None,
         )
 
@@ -165,6 +204,7 @@ class GaussianRasterizationSettings(NamedTuple):
     bg : torch.Tensor
     scale_modifier : float
     viewmatrix : torch.Tensor
+    perspectivematrix: torch.Tensor
     projmatrix : torch.Tensor
     sh_degree : int
     campos : torch.Tensor
@@ -187,7 +227,7 @@ class GaussianRasterizer(nn.Module):
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None, viewmat = None):
         
         raster_settings = self.raster_settings
 
@@ -219,6 +259,7 @@ class GaussianRasterizer(nn.Module):
             scales, 
             rotations,
             cov3D_precomp,
+            viewmat,
             raster_settings, 
         )
 

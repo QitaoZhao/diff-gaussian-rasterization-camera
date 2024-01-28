@@ -150,6 +150,7 @@ __global__ void computeCov2DCUDA(int P,
 	const float* view_matrix,
 	const float* dL_dconics,
 	float3* dL_dmeans,
+	float3* dL_dts,
 	float* dL_dcov)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -271,6 +272,9 @@ __global__ void computeCov2DCUDA(int P,
 	// that is caused because the mean affects the covariance matrix.
 	// Additional mean gradient is accumulated in BACKWARD::preprocess.
 	dL_dmeans[idx] = dL_dmean;
+
+	// Created by Qitao
+	dL_dts[idx] = { dL_dtx, dL_dty, dL_dtz };
 }
 
 // Backward pass for the conversion of scale and rotation to a 
@@ -387,6 +391,14 @@ __global__ void preprocessCUDA(
 	// That's the second part of the mean gradient. Previous computation
 	// of cov2D and following SH conversion also affects it.
 	dL_dmeans[idx] += dL_dmean;
+	// float3 cudaVec = make_float3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
+
+	// // Assume transformVec4x3Transpose is a function that transforms cudaVec
+	// float3 temp = transformVec4x3Transpose(cudaVec, view);
+
+	// // Convert back to glm::vec3 (if needed) and update dL_dmeans
+	// glm::vec3 glmVec(temp.x, temp.y, temp.z);
+	// dL_dmeans[idx] += glmVec; 
 
 	// the w must be equal to 1 for view^T * [x,y,z,1]
 	float3 m_view = transformPoint4x3(m, view);
@@ -616,6 +628,7 @@ void BACKWARD::preprocess(
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos,
 	const float3* dL_dmean2D,
+	float3* dL_dts,
 	const float* dL_dconic,
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
@@ -641,6 +654,7 @@ void BACKWARD::preprocess(
 		viewmatrix,
 		dL_dconic,
 		(float3*)dL_dmean3D,
+		(float3*)dL_dts,
 		dL_dcov3D);
 
 	// Propagate gradients for remaining steps: finish 3D mean gradients,

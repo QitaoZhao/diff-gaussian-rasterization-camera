@@ -1,5 +1,6 @@
 build/
 diff_gaussian_rasterization.egg-info/
+third_party/
 dist/
 
 __pycache__
