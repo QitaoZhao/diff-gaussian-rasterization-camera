@@ -147,15 +147,16 @@ class _RasterizeGaussians(torch.autograd.Function):
              grad_means2D, grad_ts, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
         
         with torch.no_grad():
-            # return projmat gradients
+            # return viewmat gradients
             projmat = raster_settings.projmatrix.T
             means_h = torch.cat([means3D, torch.ones_like(means3D[..., :1])], dim=-1)
             p_hom = torch.einsum("ij,nj->ni", projmat, means_h)
             rw = 1 / (p_hom[..., 3] + 1e-5)
 
             proj = raster_settings.perspectivematrix.flatten()
-            # mul1 = (proj[0] * m.x + proj[4] * m.y + proj[8] * m.z + proj[12]) * m_w * m_w;
-            # mul2 = (proj[1] * m.x + proj[5] * m.y + proj[9] * m.z + proj[13]) * m_w * m_w;
+            # v_t is the grad w.r.t. the 3D mean in camera coordinates
+            # Math reference (https://arxiv.org/pdf/2312.02121.pdf)
+            # One source is from grad_means2D (the grad w.r.t. the mean in ND coordinates, t' in the paper)
             v_tx = grad_means2D[:, 0] * (proj[0] * rw - proj[3] * p_hom[:, 0] * torch.square(rw))
             v_tx += grad_means2D[:, 1] * (proj[1] * rw - proj[3] * p_hom[:, 1] * torch.square(rw))
             v_ty = grad_means2D[:, 0] * (proj[4] * rw - proj[7] * p_hom[:, 0] * torch.square(rw))
@@ -171,15 +172,12 @@ class _RasterizeGaussians(torch.autograd.Function):
                 ],
                 dim=-1,
             )
+            # Another source of gradients (grad_ts) 
+            # t is involved in the affine transform J when computing the 2D covariance matrix
+            # grad_ts is gathered from "cuda_rasterizer/backward.cu"
             v_t[:, :3] += grad_ts
-            # proj = projmat * means3d
-            # v_projmat = sum(outer(v_proj, means3d))
-            # v_projmat = torch.einsum("ni,nj->ij", v_proj, means_h)  # (4, 4)
-            # grad_viewmat = v_t @ means_h.T
-            grad_viewmat = torch.einsum("ni,nj->ij", v_t, means_h).T
-        # print(grad_viewmat)
-        # print("grad_viewmat:", (grad_viewmat ** 2).mean())
-        # print("grad_means2D:", (grad_means2D ** 2).mean())
+            # Finally, we compute the grad w.r.t. the viewmatrix from v_t
+            grad_viewmat = torch.einsum("ni,nj->ij", v_t, means_h).T # We transposed the viewmatrix
 
         grads = (
             grad_means3D,

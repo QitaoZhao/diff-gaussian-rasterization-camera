@@ -2,7 +2,7 @@ build/
 diff_gaussian_rasterization.egg-info/
 third_party/
 dist/
-
+.DS_Store
 __pycache__
 
 *.so

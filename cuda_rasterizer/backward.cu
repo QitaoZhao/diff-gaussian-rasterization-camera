@@ -391,14 +391,6 @@ __global__ void preprocessCUDA(
 	// That's the second part of the mean gradient. Previous computation
 	// of cov2D and following SH conversion also affects it.
 	dL_dmeans[idx] += dL_dmean;
-	// float3 cudaVec = make_float3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
-
-	// // Assume transformVec4x3Transpose is a function that transforms cudaVec
-	// float3 temp = transformVec4x3Transpose(cudaVec, view);
-
-	// // Convert back to glm::vec3 (if needed) and update dL_dmeans
-	// glm::vec3 glmVec(temp.x, temp.y, temp.z);
-	// dL_dmeans[idx] += glmVec; 
 
 	// the w must be equal to 1 for view^T * [x,y,z,1]
 	float3 m_view = transformPoint4x3(m, view);
